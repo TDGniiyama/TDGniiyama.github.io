@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>宛名ラベル — mynails. / TIP DE GEL</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #F7F5F2; font-family: 'Helvetica Neue', 'Yu Gothic', Arial, sans-serif; }
+  button { cursor: pointer; font-family: inherit; }
+  .drop-zone {
+    border: 2px dashed #555; border-radius: 8px; padding: 40px 24px;
+    text-align: center; cursor: pointer; transition: all 0.2s; background: #1E1E1E;
+  }
+  .drop-zone:hover, .drop-zone.drag-over { border-color: #AAA; background: #222; }
+  input[type=file] { display: none; }
+
+  /* ラベル用印刷スタイル */
+  @media print {
+    body { background: white; }
+    .no-print { display: none !important; }
+    .label-page { margin: 0; box-shadow: none !important; }
+  }
+  .label-page {
+    width: 210mm; height: 297mm;
+    background: white;
+    margin: 0 auto 20px;
+    padding-top: 21mm; padding-left: 18.5mm;
+    box-shadow: 0 0 8px rgba(0,0,0,0.15);
+    page-break-after: always;
+  }
+  .label-grid {
+    display: grid;
+    grid-template-columns: 86.4mm 86.4mm;
+    grid-template-rows: 50.8mm 50.8mm 50.8mm 50.8mm 50.8mm;
+  }
+  .label-cell {
+    padding: 4mm 5mm;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    overflow: hidden;
+  }
+  .label-zip { font-size: 9px; color: #333; margin-bottom: 2mm; }
+  .label-addr { font-size: 11px; color: #111; line-height: 1.4; margin-bottom: 3mm; }
+  .label-name { font-size: 15px; font-weight: 700; color: #000; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+
+const EXCLUDE = ['計測用チップ','装着セット','紛失補償','事前スペア','品質保証','単品での制作','ご購入者様専用','フット（親指のみ）','サンプル'];
+
+const PREF_MAP = {
+  'JP-01':'北海道','JP-02':'青森県','JP-03':'岩手県','JP-04':'宮城県','JP-05':'秋田県',
+  'JP-06':'山形県','JP-07':'福島県','JP-08':'茨城県','JP-09':'栃木県','JP-10':'群馬県',
+  'JP-11':'埼玉県','JP-12':'千葉県','JP-13':'東京都','JP-14':'神奈川県','JP-15':'新潟県',
+  'JP-16':'富山県','JP-17':'石川県','JP-18':'福井県','JP-19':'山梨県','JP-20':'長野県',
+  'JP-21':'岐阜県','JP-22':'静岡県','JP-23':'愛知県','JP-24':'三重県','JP-25':'滋賀県',
+  'JP-26':'京都府','JP-27':'大阪府','JP-28':'兵庫県','JP-29':'奈良県','JP-30':'和歌山県',
+  'JP-31':'鳥取県','JP-32':'島根県','JP-33':'岡山県','JP-34':'広島県','JP-35':'山口県',
+  'JP-36':'徳島県','JP-37':'香川県','JP-38':'愛媛県','JP-39':'高知県','JP-40':'福岡県',
+  'JP-41':'佐賀県','JP-42':'長崎県','JP-43':'熊本県','JP-44':'大分県','JP-45':'宮崎県',
+  'JP-46':'鹿児島県','JP-47':'沖縄県',
+};
+
+function parseCSV(text) {
+  const lines = text.split(/\r?\n/);
+  if (!lines.length) return [];
+  const headers = lines[0].split(",").map(h => h.replace(/^"|"$/g,"").trim());
+  function getCol(cols, name) {
+    const idx = headers.indexOf(name);
+    if (idx < 0) return "";
+    return (cols[idx] || "").replace(/^"|"$/g,"").trim();
+  }
+  function parseLine(line) {
+    const cols = []; let cur = "", inQ = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') inQ = !inQ;
+      else if (c === ',' && !inQ) { cols.push(cur); cur = ""; }
+      else cur += c;
+    }
+    cols.push(cur);
+    return cols;
+  }
+
+  const orders = {};
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    const cols = parseLine(line);
+    const oid = getCol(cols, "Name");
+    const itemName = getCol(cols, "Lineitem name");
+    const vendor = getCol(cols, "Vendor");
+    const cancelled = getCol(cols, "Cancelled at");
+    if (!oid || !itemName || cancelled) continue;
+    if (EXCLUDE.some(kw => itemName.includes(kw))) continue;
+
+    if (!orders[oid]) {
+      const name = getCol(cols, "Shipping Name") || getCol(cols, "Billing Name");
+      const zip = (getCol(cols, "Shipping Zip") || getCol(cols, "Billing Zip")).replace(/-/g, "");
+      const prefCode = getCol(cols, "Shipping Province") || getCol(cols, "Billing Province");
+      const prefName = getCol(cols, "Shipping Province Name") || getCol(cols, "Billing Province Name");
+      const pref = PREF_MAP[prefCode] || prefName || "";
+      const city = getCol(cols, "Shipping City") || getCol(cols, "Billing City");
+      const addr1 = getCol(cols, "Shipping Address1") || getCol(cols, "Billing Address1");
+      const addr2 = getCol(cols, "Shipping Address2") || getCol(cols, "Billing Address2");
+      orders[oid] = {
+        id: oid, name, zip,
+        addr: `${pref}${city}${addr1}${addr2}`.trim(),
+        brands: new Set(),
+      };
+    }
+    if (vendor) orders[oid].brands.add(vendor);
+  }
+  return Object.values(orders).filter(o => o.name && o.addr);
+}
+
+function formatZip(zip) {
+  if (zip && zip.length === 7) return `${zip.slice(0,3)}-${zip.slice(3)}`;
+  return zip;
+}
+
+function LabelPages({ items }) {
+  if (!items.length) {
+    return <div style={{ textAlign: "center", color: "#AAA", padding: "60px 0", fontSize: "13px" }}>対象データなし</div>;
+  }
+  const pages = [];
+  for (let i = 0; i < items.length; i += 10) pages.push(items.slice(i, i + 10));
+
+  return (
+    <>
+      {pages.map((pageItems, pi) => (
+        <div className="label-page" key={pi}>
+          <div className="label-grid">
+            {Array.from({ length: 10 }).map((_, i) => {
+              const item = pageItems[i];
+              return (
+                <div className="label-cell" key={i}>
+                  {item && (
+                    <>
+                      <div className="label-zip">〒{formatZip(item.zip)}</div>
+                      <div className="label-addr">{item.addr}</div>
+                      <div className="label-name">{item.name} 様</div>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
+function App() {
+  const [allOrders, setAllOrders] = React.useState([]);
+  const [fileName, setFileName] = React.useState(null);
+  const [drag, setDrag] = React.useState(false);
+  const [brand, setBrand] = React.useState("mynails");
+  const fileRef = React.useRef();
+
+  function handleFile(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+      setAllOrders(parseCSV(e.target.result));
+      setFileName(file.name);
+    };
+    reader.readAsText(file, "utf-8");
+  }
+
+  const mynailsItems = allOrders.filter(o => o.brands.has("mynails"));
+  const tdgItems = allOrders.filter(o => o.brands.has("TIP DE GEL"));
+  const currentItems = brand === "mynails" ? mynailsItems : tdgItems;
+
+  if (!allOrders.length) {
+    return (
+      <div style={{ minHeight: "100vh", background: "#1A1A1A", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "24px" }}>
+        <div style={{ color: "#555", fontSize: "10px", letterSpacing: "0.2em", marginBottom: "32px" }}>ADDRESS LABELS — mynails. / TIP DE GEL</div>
+        <div className={`drop-zone${drag ? " drag-over" : ""}`} style={{ width: "100%", maxWidth: "400px" }}
+          onClick={() => fileRef.current.click()}
+          onDragOver={e => { e.preventDefault(); setDrag(true); }}
+          onDragLeave={() => setDrag(false)}
+          onDrop={e => { e.preventDefault(); setDrag(false); handleFile(e.dataTransfer.files[0]); }}
+        >
+          <div style={{ fontSize: "28px", marginBottom: "12px" }}>🏷️</div>
+          <div style={{ color: "#CCC", fontSize: "13px", marginBottom: "6px" }}>ShopifyのCSVをここにドロップ</div>
+          <div style={{ color: "#555", fontSize: "11px" }}>またはタップして選択</div>
+          <input ref={fileRef} type="file" accept=".csv" onChange={e => handleFile(e.target.files[0])} />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#F7F5F2" }}>
+      <div className="no-print" style={{ background: "#1A1A1A", padding: "20px 24px", position: "sticky", top: 0, zIndex: 10 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px" }}>
+          <div style={{ color: "#555", fontSize: "10px", letterSpacing: "0.15em" }}>ADDRESS LABELS</div>
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button onClick={() => window.print()} style={{ background: "#F7F5F2", border: "none", color: "#1A1A1A", padding: "6px 14px", fontSize: "11px", borderRadius: "3px", fontWeight: 600 }}>🖨 印刷</button>
+            <button onClick={() => { setAllOrders([]); setFileName(null); }} style={{ background: "transparent", border: "1px solid #333", color: "#666", padding: "6px 14px", fontSize: "11px", borderRadius: "3px" }}>↺ 再読み込み</button>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button onClick={() => setBrand("mynails")} style={{
+            flex: 1, background: brand === "mynails" ? "#EEF6F8" : "transparent",
+            border: "1px solid", borderColor: brand === "mynails" ? "#7EB6C2" : "#333",
+            borderRadius: "4px", padding: "10px 12px", textAlign: "left",
+          }}>
+            <div style={{ fontSize: "10px", fontWeight: 600, color: brand === "mynails" ? "#7EB6C2" : "#888", letterSpacing: "0.05em" }}>mynails.</div>
+            <div style={{ fontSize: "18px", fontWeight: 200, color: brand === "mynails" ? "#1A1A1A" : "#666" }}>{mynailsItems.length}<span style={{ fontSize: "10px", marginLeft: "4px" }}>件</span></div>
+          </button>
+          <button onClick={() => setBrand("tdg")} style={{
+            flex: 1, background: brand === "tdg" ? "#F5F0EB" : "transparent",
+            border: "1px solid", borderColor: brand === "tdg" ? "#9A7A5A" : "#333",
+            borderRadius: "4px", padding: "10px 12px", textAlign: "left",
+          }}>
+            <div style={{ fontSize: "10px", fontWeight: 600, color: brand === "tdg" ? "#9A7A5A" : "#888", letterSpacing: "0.05em" }}>TIP DE GEL</div>
+            <div style={{ fontSize: "18px", fontWeight: 200, color: brand === "tdg" ? "#1A1A1A" : "#666" }}>{tdgItems.length}<span style={{ fontSize: "10px", marginLeft: "4px" }}>件</span></div>
+          </button>
+        </div>
+        <div style={{ fontSize: "9px", color: "#666", marginTop: "10px" }}>📄 {fileName}　|　L貼-852等 86.4×50.8mm 10面ラベル対応</div>
+      </div>
+
+      <div style={{ padding: "20px 0" }}>
+        <LabelPages items={currentItems} />
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
