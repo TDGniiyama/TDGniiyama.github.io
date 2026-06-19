@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>発送資材計算 — mynails. / TIP DE GEL</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #F7F5F2; font-family: 'Helvetica Neue', Arial, sans-serif; }
+  button { cursor: pointer; font-family: inherit; }
+  .drop-zone {
+    border: 2px dashed #555; border-radius: 8px; padding: 40px 24px;
+    text-align: center; cursor: pointer; transition: all 0.2s; background: #1E1E1E;
+  }
+  .drop-zone:hover, .drop-zone.drag-over { border-color: #AAA; background: #222; }
+  input[type=file] { display: none; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+
+const EXCLUDE = ['計測用チップ','紛失補償','事前スペア','品質保証','単品での制作','フット（親指のみ）'];
+const SET_KEYWORDS = ['装着セット','ご購入者様専用　装着セット'];
+
+function parseCSV(text) {
+  const lines = text.split(/\r?\n/);
+  if (!lines.length) return {};
+  const headers = lines[0].split(",").map(h => h.replace(/^"|"$/g,"").trim());
+  function getCol(cols, name) {
+    const idx = headers.indexOf(name);
+    if (idx < 0) return "";
+    return (cols[idx] || "").replace(/^"|"$/g,"").trim();
+  }
+  function parseLine(line) {
+    const cols = []; let cur = "", inQ = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') inQ = !inQ;
+      else if (c === ',' && !inQ) { cols.push(cur); cur = ""; }
+      else cur += c;
+    }
+    cols.push(cur);
+    return cols;
+  }
+
+  // 各ブランドの対象注文IDを先に特定（装着セットを除いた本商品ベース）
+  const brandOrderIds = { mynails: new Set(), "TIP DE GEL": new Set() };
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    const cols = parseLine(line);
+    const oid = getCol(cols, "Name");
+    const itemName = getCol(cols, "Lineitem name");
+    const vendor = getCol(cols, "Vendor");
+    const cancelled = getCol(cols, "Cancelled at");
+    if (!oid || !itemName || cancelled) continue;
+    if (EXCLUDE.some(kw => itemName.includes(kw))) continue;
+    if (SET_KEYWORDS.some(kw => itemName.includes(kw))) continue;
+    if (vendor === "mynails") brandOrderIds.mynails.add(oid);
+    if (vendor === "TIP DE GEL") brandOrderIds["TIP DE GEL"].add(oid);
+  }
+
+  const result = { mynails: {}, "TIP DE GEL": {} };
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    const cols = parseLine(line);
+    const oid = getCol(cols, "Name");
+    const itemName = getCol(cols, "Lineitem name");
+    const vendor = getCol(cols, "Vendor");
+    const customer = getCol(cols, "Billing Name") || getCol(cols, "Shipping Name");
+    const qty = parseInt(getCol(cols, "Lineitem quantity") || "1");
+    const cancelled = getCol(cols, "Cancelled at");
+
+    if (!oid || !itemName || cancelled) continue;
+    if (EXCLUDE.some(kw => itemName.includes(kw))) continue;
+
+    for (const b of ["mynails", "TIP DE GEL"]) {
+      if (!brandOrderIds[b].has(oid)) continue;
+      if (!result[b][oid]) result[b][oid] = { id: oid, customer: "", hasSet: false, chipCount: 0 };
+      if (customer && !result[b][oid].customer) result[b][oid].customer = customer;
+      if (SET_KEYWORDS.some(kw => itemName.includes(kw))) {
+        result[b][oid].hasSet = true;
+      } else if (vendor === b) {
+        result[b][oid].chipCount += qty;
+      }
+    }
+  }
+
+  return {
+    mynails: Object.values(result.mynails).filter(o => o.chipCount > 0 || o.hasSet),
+    "TIP DE GEL": Object.values(result["TIP DE GEL"]).filter(o => o.chipCount > 0 || o.hasSet),
+  };
+}
+
+// 同じ注文番号がmynails./TDG両方にある場合は1注文として統合（箱・手紙等は注文単位なので重複させない）
+function mergeOrders(mynailsList, tdgList) {
+  const merged = {};
+  for (const o of [...mynailsList, ...tdgList]) {
+    if (!merged[o.id]) merged[o.id] = { id: o.id, customer: o.customer, hasSet: false, chipCount: 0 };
+    merged[o.id].hasSet = merged[o.id].hasSet || o.hasSet;
+    merged[o.id].chipCount += o.chipCount;
+  }
+  return Object.values(merged);
+}
+
+function App() {
+  const [ordersByBrand, setOrdersByBrand] = React.useState(null);
+  const [fileName, setFileName] = React.useState(null);
+  const [drag, setDrag] = React.useState(false);
+  const [brand, setBrand] = React.useState("mynails");
+  const fileRef = React.useRef();
+
+  function handleFile(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+      setOrdersByBrand(parseCSV(e.target.result));
+      setFileName(file.name);
+    };
+    reader.readAsText(file, "utf-8");
+  }
+
+  const orders = ordersByBrand
+    ? (brand === "all"
+        ? mergeOrders(ordersByBrand.mynails, ordersByBrand["TIP DE GEL"])
+        : ordersByBrand[brand])
+    : [];
+
+  // 集計
+  const setCount = orders.filter(o => o.hasSet).length;
+  const totalOrders = orders.length;
+  const totalChips = orders.reduce((s, o) => s + o.chipCount, 0);
+  const mynailsChips = ordersByBrand ? ordersByBrand.mynails.reduce((s,o)=>s+o.chipCount,0) : 0;
+
+  const bigBoxOrders = orders.filter(o => o.hasSet || o.chipCount >= 2);
+  const smallBoxOrders = orders.filter(o => !o.hasSet && o.chipCount === 1);
+  const comboOrders = orders.filter(o => o.hasSet && o.chipCount >= 2);
+
+  const bigBoxCount = bigBoxOrders.length;
+  const smallBoxCount = smallBoxOrders.length;
+  const extraSmallBoxForCombo = comboOrders.length;
+
+  const totalBoxes = bigBoxCount + smallBoxCount + extraSmallBoxForCombo;
+  const sealCount = totalBoxes;
+
+  const isMynails = brand === "mynails";
+  const isAll = brand === "all";
+  const items = isAll ? [
+    { label: '装着セット（購入数）', value: setCount, note: '合計' },
+    { label: '基本セット（mynails.分）', value: mynailsChips, note: 'デザインチップ1本につき1セット（mynails.のみ）' },
+    { label: '大きい箱', value: bigBoxCount, note: '装着セットあり or チップ2個以上' },
+    { label: '小さい箱', value: smallBoxCount + extraSmallBoxForCombo, note: 'チップ1個のみ／複合注文の追加分含む' },
+    { label: '手紙', value: totalOrders, note: '注文1件につき1枚' },
+    { label: '品質保証シート', value: totalOrders, note: '注文1件につき1枚' },
+    { label: '箱用シール', value: sealCount, note: '箱の数分' },
+  ] : isMynails ? [
+    { label: '装着セット（購入数）', value: setCount, note: 'mynails.へ発送' },
+    { label: '基本セット（全員分）', value: totalChips, note: 'デザインチップ1本につき1セット' },
+    { label: '大きい箱', value: bigBoxCount, note: '装着セットあり or チップ2個以上' },
+    { label: '小さい箱', value: smallBoxCount + extraSmallBoxForCombo, note: 'チップ1個のみ／複合注文の追加分含む' },
+    { label: '手紙', value: totalOrders, note: '注文1件につき1枚' },
+    { label: '品質保証シート', value: totalOrders, note: '注文1件につき1枚' },
+    { label: '箱用シール', value: sealCount, note: '箱の数分' },
+    { label: '次回クーポン', value: totalOrders, note: '注文1件につき1枚' },
+  ] : [
+    { label: '装着セット（購入数）', value: setCount, note: 'TIP DE GELで用意' },
+    { label: '大きい箱', value: bigBoxCount, note: '装着セットあり or チップ2個以上' },
+    { label: '小さい箱', value: smallBoxCount + extraSmallBoxForCombo, note: 'チップ1個のみ／複合注文の追加分含む' },
+    { label: '手紙', value: totalOrders, note: '注文1件につき1枚' },
+    { label: '品質保証シート', value: totalOrders, note: '注文1件につき1枚' },
+    { label: '箱用シール', value: sealCount, note: '箱の数分' },
+  ];
+
+  if (!ordersByBrand) {
+    return (
+      <div style={{ minHeight: "100vh", background: "#1A1A1A", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "24px" }}>
+        <div style={{ color: "#555", fontSize: "10px", letterSpacing: "0.2em", marginBottom: "32px" }}>SHIPPING SUPPLIES — mynails. / TIP DE GEL</div>
+        <div className={`drop-zone${drag ? " drag-over" : ""}`} style={{ width: "100%", maxWidth: "400px" }}
+          onClick={() => fileRef.current.click()}
+          onDragOver={e => { e.preventDefault(); setDrag(true); }}
+          onDragLeave={() => setDrag(false)}
+          onDrop={e => { e.preventDefault(); setDrag(false); handleFile(e.dataTransfer.files[0]); }}
+        >
+          <div style={{ fontSize: "28px", marginBottom: "12px" }}>📦</div>
+          <div style={{ color: "#CCC", fontSize: "13px", marginBottom: "6px" }}>ShopifyのCSVをここにドロップ</div>
+          <div style={{ color: "#555", fontSize: "11px" }}>またはタップして選択</div>
+          <input ref={fileRef} type="file" accept=".csv" onChange={e => handleFile(e.target.files[0])} />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#F7F5F2" }}>
+      <div style={{ background: "#1A1A1A", padding: "20px 24px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ color: "#555", fontSize: "10px", letterSpacing: "0.15em" }}>SHIPPING SUPPLIES</div>
+          <button onClick={() => { setOrdersByBrand(null); setFileName(null); }} style={{
+            background: "transparent", border: "1px solid #333", color: "#666", padding: "4px 10px", fontSize: "10px", borderRadius: "2px",
+          }}>↺ 再読み込み</button>
+        </div>
+        <div style={{ color: "#F7F5F2", fontSize: "18px", fontWeight: 300, marginTop: "10px" }}>発送資材 必要数</div>
+        <div style={{ color: "#777", fontSize: "11px", marginTop: "4px" }}>{brand === "all" ? "合計" : brand === "mynails" ? "mynails." : "TIP DE GEL"}：全{totalOrders}件・{totalChips}本</div>
+        <div style={{ display: "flex", gap: "8px", marginTop: "14px" }}>
+          <button onClick={() => setBrand("all")} style={{
+            flex: 1, background: brand === "all" ? "#F7F5F2" : "transparent",
+            border: "1px solid", borderColor: brand === "all" ? "#F7F5F2" : "#333",
+            borderRadius: "4px", padding: "8px 12px", fontSize: "11px", fontWeight: 600,
+            color: brand === "all" ? "#1A1A1A" : "#888",
+          }}>ALL</button>
+          <button onClick={() => setBrand("mynails")} style={{
+            flex: 1, background: brand === "mynails" ? "#EEF6F8" : "transparent",
+            border: "1px solid", borderColor: brand === "mynails" ? "#7EB6C2" : "#333",
+            borderRadius: "4px", padding: "8px 12px", fontSize: "11px", fontWeight: 600,
+            color: brand === "mynails" ? "#7EB6C2" : "#888",
+          }}>mynails.</button>
+          <button onClick={() => setBrand("TIP DE GEL")} style={{
+            flex: 1, background: brand === "TIP DE GEL" ? "#F5F0EB" : "transparent",
+            border: "1px solid", borderColor: brand === "TIP DE GEL" ? "#9A7A5A" : "#333",
+            borderRadius: "4px", padding: "8px 12px", fontSize: "11px", fontWeight: 600,
+            color: brand === "TIP DE GEL" ? "#9A7A5A" : "#888",
+          }}>TIP DE GEL</button>
+        </div>
+      </div>
+
+      <div style={{ background: "#F0ECE8", padding: "8px 24px", borderBottom: "1px solid #E0DCD8" }}>
+        <span style={{ fontSize: "9px", color: "#AAA" }}>📄 {fileName}</span>
+      </div>
+
+      <div style={{ padding: "20px 24px" }}>
+        {items.map((item, i) => (
+          <div key={i} style={{
+            display: "flex", alignItems: "center", gap: "14px",
+            background: "white", borderRadius: "6px", padding: "14px 16px", marginBottom: "10px",
+            border: "1px solid #E8E4DF",
+          }}>
+            <div style={{
+              fontSize: "26px", fontWeight: 200, color: "#1A1A1A",
+              minWidth: "48px", textAlign: "center",
+            }}>{item.value}</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: "13px", color: "#2A2A2A", fontWeight: 500 }}>{item.label}</div>
+              <div style={{ fontSize: "11px", color: "#999", marginTop: "2px" }}>{item.note}</div>
+            </div>
+          </div>
+        ))}
+
+        <div style={{ marginTop: "24px", borderTop: "1px solid #E0DCD8", paddingTop: "14px" }}>
+          <div style={{ fontSize: "10px", color: "#AAA", letterSpacing: "0.1em", marginBottom: "10px" }}>注文ごとの箱分け詳細</div>
+          {orders.map(o => {
+            let boxType = '';
+            if (o.hasSet && o.chipCount >= 2) boxType = '大箱＋小箱';
+            else if (o.hasSet) boxType = '大箱';
+            else if (o.chipCount >= 2) boxType = '大箱';
+            else boxType = '小箱';
+            return (
+              <div key={o.id} style={{
+                display: "flex", gap: "10px", padding: "6px 0", borderBottom: "1px solid #EDE9E4",
+                fontSize: "11px", color: "#555", alignItems: "center",
+              }}>
+                <span style={{ minWidth: "44px", color: "#999" }}>{o.id}</span>
+                <span style={{ flex: 1 }}>{o.customer}</span>
+                <span style={{ color: "#888" }}>{o.chipCount}本{o.hasSet ? '＋セット' : ''}</span>
+                <span style={{
+                  fontSize: "10px", padding: "1px 6px", borderRadius: "2px",
+                  background: "#EEF6F8", color: "#7EB6C2", border: "1px solid #7EB6C280",
+                }}>{boxType}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
